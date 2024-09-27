@@ -2,6 +2,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using JetBrains.Annotations;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -24,6 +26,7 @@ namespace JoystickRemoteConfig.Core.Web
 
         private int _requestTimeOutDuration;
         private int _requestAttempts;
+        private CancellationTokenSource _cancellationTokenSource;
         
         public WebRequestInternal(WebRequest.Configuration configuration)
         {
@@ -47,7 +50,8 @@ namespace JoystickRemoteConfig.Core.Web
             if (RequestState == WebRequestState.None)
             {
                 RequestState = WebRequestState.Pending;
-                WebRequestManager.Instance.StartRequest(this, RequestRoutine());
+                _cancellationTokenSource = new CancellationTokenSource();
+                RequestRoutineAsync(_cancellationTokenSource.Token);
             }
         }
 
@@ -56,7 +60,8 @@ namespace JoystickRemoteConfig.Core.Web
             if (RequestState == WebRequestState.Pending)
             {
                 RequestState = WebRequestState.None;
-                WebRequestManager.Instance.StopRequest(this);
+                _cancellationTokenSource?.Cancel();
+                _request?.Abort();
                 DisposeRequest(true);
             }
         }
@@ -72,7 +77,8 @@ namespace JoystickRemoteConfig.Core.Web
                 OnRequestWillRestart?.Invoke(_requestAttempts);
 
                 SetUpRequestConfiguration(_configuration);
-                WebRequestManager.Instance.RestartRequest(this, RequestRoutine());
+                _cancellationTokenSource = new CancellationTokenSource();
+                RequestRoutineAsync(_cancellationTokenSource.Token);
             }
         }
 
@@ -116,57 +122,70 @@ namespace JoystickRemoteConfig.Core.Web
             return configured;
         }
 
-        private IEnumerator RequestRoutine()
+        private async Task RequestRoutineAsync(CancellationToken cancellationToken)
         {
-            if (RequestState == WebRequestState.Pending)
+            try
             {
-                _requestTimeOutDuration = RequestTimeOut + (RequestTimeOut / 2 * _requestAttempts);
-                _requestAttempts++;
-
-                _request.SendWebRequest();
-            }
-
-            float requestProgress = -1f;
-            float requestStuckTime = 0f;
-
-            while (!_request.isDone)
-            {
-                bool requestNotProgressing = Mathf.Approximately(requestProgress, _request.uploadProgress + _request.downloadProgress);
-
-                if (requestNotProgressing)
+                if (RequestState == WebRequestState.Pending)
                 {
-                    requestStuckTime += Time.deltaTime;
+                    _requestTimeOutDuration = RequestTimeOut + (RequestTimeOut / 2 * _requestAttempts);
+                    _requestAttempts++;
 
-                    if (requestStuckTime >= _requestTimeOutDuration)
+                    var operation = _request.SendWebRequest();
+                }
+
+                float requestProgress = -1f;
+                float requestStuckTime = 0f;
+
+                while (!_request.isDone)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    bool requestNotProgressing = Mathf.Approximately(requestProgress, _request.uploadProgress + _request.downloadProgress);
+
+                    if (requestNotProgressing)
                     {
-                        RequestState = WebRequestState.Timeout;
-                        HandleOnRequestTimeOut();
+                        requestStuckTime += Time.deltaTime;
 
-                        yield break;
+                        if (requestStuckTime >= _requestTimeOutDuration)
+                        {
+                            RequestState = WebRequestState.Timeout;
+                            HandleOnRequestTimeOut();
+
+                            return;
+                        }
                     }
+                    else
+                    {
+                        requestStuckTime = 0f;
+                        requestProgress = _request.uploadProgress + _request.downloadProgress;
+                    }
+
+                    await Task.Yield();
+                }
+
+                RequestState = WebRequestState.Completed;
+
+                if (_request.result is UnityWebRequest.Result.ConnectionError or UnityWebRequest.Result.DataProcessingError or UnityWebRequest.Result.ProtocolError)
+                {
+                    JoystickLogger.LogError($"Request result: {_request.result} | ErrorInfo: {_request.error} | Url: {_request.url}");
                 }
                 else
                 {
-                    requestStuckTime = 0f;
-                    requestProgress = _request.uploadProgress + _request.downloadProgress;
+                    JoystickLogger.Log($"Url: {_request.url} | Response Code:{_request.responseCode} | Response Data: {_request.downloadHandler.text}");
                 }
 
-                yield return null;
+                HandleOnRequestDone();
+                DisposeRequest(true);
             }
-
-            RequestState = WebRequestState.Completed;
-
-            if (_request.result is UnityWebRequest.Result.ConnectionError or UnityWebRequest.Result.DataProcessingError or UnityWebRequest.Result.ProtocolError)
+            catch (OperationCanceledException)
             {
-                JoystickLogger.LogError($"Request result: {_request.result} | ErrorInfo: {_request.error} | Url: {_request.url}");
+                JoystickLogger.Log("Request was cancelled.");
             }
-            else
+            catch (Exception e)
             {
-                JoystickLogger.Log($"Url: {_request.url} | Response Code:{_request.responseCode} | Response Data: {_request.downloadHandler.text}");
+                JoystickLogger.LogError($"An error occurred during the request: {e.Message}");
             }
-
-            HandleOnRequestDone();
-            DisposeRequest(true);
         }
 
         private void HandleOnRequestTimeOut()
@@ -224,6 +243,8 @@ namespace JoystickRemoteConfig.Core.Web
             _request.disposeUploadHandlerOnDispose = disposeUploadHandler;
             _request.Dispose();
             _request = null;
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
         }
     }
 }
