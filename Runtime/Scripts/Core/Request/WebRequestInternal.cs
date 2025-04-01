@@ -16,8 +16,8 @@ namespace JoystickRemoteConfig.Core.Web
         public event Action<WebRequestResponseData> OnRequestDone;
         public event Action<int> OnRequestWillRestart;
 
-        private const int RequestTimeOut = 8;
-        private int _requestAttemptsLimit = 3;
+        private const int RequestTimeOut = 4;
+        private int _requestAttemptsLimit = 1;
 
         public WebRequestState RequestState { get; private set; }
         
