@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -134,8 +135,8 @@ namespace JoystickRemoteConfig.Core.Web
                     var operation = _request.SendWebRequest();
                 }
 
-                float requestProgress = -1f;
-                float requestStuckTime = 0f;
+				float requestProgress = -1f;
+                Stopwatch requestStuckTime = Stopwatch.StartNew();
 
                 while (!_request.isDone)
                 {
@@ -145,9 +146,7 @@ namespace JoystickRemoteConfig.Core.Web
 
                     if (requestNotProgressing)
                     {
-                        requestStuckTime += Time.deltaTime;
-
-                        if (requestStuckTime >= _requestTimeOutDuration)
+                        if (requestStuckTime.Elapsed.TotalSeconds >= _requestTimeOutDuration)
                         {
                             RequestState = WebRequestState.Timeout;
                             HandleOnRequestTimeOut();
@@ -157,7 +156,7 @@ namespace JoystickRemoteConfig.Core.Web
                     }
                     else
                     {
-                        requestStuckTime = 0f;
+                        requestStuckTime.Restart();
                         requestProgress = _request.uploadProgress + _request.downloadProgress;
                     }
 
